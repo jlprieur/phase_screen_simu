@@ -1,0 +1,1633 @@
+From:	NL%"DEVOSCM@RUGR86.RUG.NL"      "Marco de Vos, Kapteyn Lab, Groningen"  7-NOV-1991 11:12:18.49
+To:	prieur@fromp51.BITNET
+CC:	
+Subj:	Phase screen program
+
+ 
+Hello Jean-Louis,
+ 
+Thanks for your reminder-telex. I hadn't forgotten about the program,
+but I had to sort some things out first, since I made some changes in
+it. I will send you two versions.
+ 
+The first one is the original written by T. Nakajima. It reads it's input
+from a text file (example sent as well), and writes output using the FIGARO
+interface.
+ 
+The second one is my adapted version. I remove some minor bug, and optimised
+the sequence of nested loops, which increases speed. This one uses the
+user- and datainterface I developed for my other software. I can send you
+the sources of the interface routines if you wish. Or you may want to
+change it to some system of your own.
+ 
+I suppose you are mainly interested in subroutine 'screen', where the
+actual phase screens are being constructed. May be you can just isolate this
+routine and plug it in you own programs.
+ 
+You need a separate 2-D FFT routine. I will send the one I used, though I
+suppose you have better ones yourself. If you want, I could change the
+program to some particular output format, please let me know. Also let
+me know if you find any inconsistencies/bugs/etc! I'm not quite sure
+wether everything is bug-free, though our simultations seem to be
+correct.
+ 
+Best regards,
+ 
+Marco de Vos.
+ 
+ 
+Files sent:     pscorg.for      Original version
+                five_15d.dat    Sample input-file
+                psc.for         Adapted version
+                psctest.lrn     Sample input-file
+                four2.for       2-D FFT routine
+ 
+ 
+   +-------------------------------------------------------------------------+
+   | Kapteyn Lab.         |  BITNET:   DEVOSCM@HGRRUG5    |       cccccccc   |
+   | P.O. Box 800         |  INTERNET: DEVOSCM@RUG.NL     |      c m   m  c  |
+   | NL-9700 AV Groningen |  PSI:      15901310200        |     c m m m  c   |
+   |                      | ------------------------------+   c  m   m  c    |
+   | Phone: +31 50 634063  \  "If you reinvent the wheel, |    v      v      |
+   | Fax:   +31 50 636100   \  make sure yours will look  |     v   v        |
+   | Telex: 53572 stars nl   | different..."              |       v          |
+   +-------------------------------------------------------------------------+
+ 
+From:	NL%"DEVOSCM@RUGR86.RUG.NL"      "Marco de Vos, Kapteyn Lab, Groningen"  7-NOV-1991 11:13:19.24
+To:	prieur@fromp51.BITNET
+CC:	
+Subj:	psc.for
+
+CHead Simulation of disturbed phase screen
+ 
+        program pscfig2
+*******************************************************************************
+*
+*       is a phase screen simulator which produces artifitial fringe
+*       or speckle patterns and obtain integrated power spectrum or(/and)
+*       optionally specified bispectral components.
+*       The atmospheric disturbance is given by the Kolmogorov spectrum.
+*       Seeing condition, aperture configuration and the object ( at this
+*       point, only multiple point sources ) and the usage of the phase screen
+*       must be specified by the user.
+*
+*       Written in standard FORTRAN and expected to run both on VMS and UNIX
+*       simply by replacing FFT routines and random number generator.
+*       On UNIX all tempory arrays are to be dynamically allocated by 'calloc()'
+*       Source code should be called pscreen.for on VMS, pscreen.f on UNIX.
+*       On a vector machine, effeciency of loops should be reconsidered.
+*
+*CMV No need to 'calloc()' arrays on Alliant
+*
+*       This is a re-organized version of the pscsn.for developed on Tacos.
+*       The program is planned to be as users oriented as possible for the
+*       future development of Optical/IR interferometry.
+*
+*       version 1.0    Dec 25, 1988 (Merry Christmas!)     Tadashi Nakajima
+*       Today's resolution : `I will have real holidays next year and live
+*                             a human life.'
+*       version 2.0    Dec 30, 1988   Now sharp cut-offs of fluctuation power
+*       spectrum at kapmin and kapmax are introduced to investigatate the
+*       relative significance of the diffractive effect and refractive effect.
+*       For instance, the refractive effect can be seen by setting lo = 0.1,
+*       while the diffractive effect can be investigated by setting L0 = 0.4.
+*
+*       Changed to work with SCASIS/GHRIL interface, options to write
+*       phase screen and detector plane.  Marco de Vos, 10-12-90
+*
+*       Optimised many nested loops by changing their order. Removed bug
+*       in simulation of double source. Marco de Vos, may/jun 91
+*
+*******************************************************************************
+ 
+CHead Declarations
+ 
+        implicit none
+        CHARACTER ID_X*(36)
+        DATA      ID_X/'!@(#) psc.f      27/09/91 v3.03 >'/
+ 
+*------ declarations ---------*
+*       constants
+        real      pi, rapdeg, rapmin, rapsec
+        complex iu
+ 
+*       integrated structure constant of the phase fluctuation
+        real   LCn2
+ 
+*       size of phase screen (m) and resolution (m/pix)
+        real   Ls, Lp
+ 
+*       size of phase screen (pix), size of power spectrum (pix)
+        integer   Ns, Np
+        parameter( Ns = 512  )
+        parameter( Np = Ns/2 )
+ 
+*       wave number, spatial frequencies and scale length of tubulence
+        real k, kapmax, kapmin, L0, dkap, lo
+ 
+*       wavelength, fractional bandwidth, # of samples
+        real lambda, fraction
+        integer nsamp
+ 
+*       complex phase screen, real and imag are independent.
+        complex psc(Ns,Ns)
+ 
+*       power spectrum array
+        real   pwr(Np,Np)
+ 
+*       maximum # of components in source, maximum number of apertures
+        integer   Maxcomp, Maxap
+        parameter( Maxcomp = 50, Maxap = 15 )
+ 
+*       source information (intensity and position in arcsec)
+        real   s_int(Maxcomp), s_pos(Maxcomp,2)
+ 
+*       aperture information (coordinate, radius, type)
+        real   c_pos(Maxap,2), c_rad(Maxap)
+        integer   c_typ(Maxap)
+ 
+*       definition of subframes
+        real   x_min, x_max, xstep, y_min, y_max, ystep
+ 
+*       number of sources, apertures, frames
+        integer ncomp, ncircle, nframe
+*
+        common/psc/ pi,rapdeg,rapmin,rapsec, iu,
+     &              k, kapmax, kapmin, L0, LCn2, Ls, Lp,
+     &              dkap, lambda, nframe,
+     &              x_min, x_max, xstep, y_min, y_max, ystep,
+     &              ncomp, ncircle, nsamp, fraction
+ 
+*       work area for subroutine power
+        real    image1(Np,Np), image2(Np,Np),  ary1(Np,Np), ary2(Np,Np)
+        complex pdata1(Np,Np), pdata2(Np,Np), cary1(Np,Np), cary2(Np,Np)
+ 
+*       variables local to main program
+        real      zero
+        integer   seed, n, iscreen, iframe, iz, jz, lx, ly
+        logical   no_dist,w_screen,w_image,w_power
+        character comment*80
+ 
+CHead Initialisation, user input
+ 
+*       common variables are not compatible with parameter statement.
+        pi = 3.141592653
+        rapdeg = pi/180.0
+        rapmin = rapdeg/60.0
+        rapsec = rapdeg/3600.0
+        iu = (0.0,1.0)
+        LCn2 = 5.0e-13
+        Ls = 10.24
+        Lp = 0.02
+ 
+*       open log-file etc, get input parameters
+        call init()
+        call logline(
+     &       '--- PSC - SCASIS/GHRIL version of PSCFIG2 - v1.0 -------')
+ 
+        nframe=50
+        x_min=2.5
+        y_min=2.5
+        x_max=8.5
+        y_max=8.5
+        xstep=.15
+        ystep=8.0
+        call userint(nframe,1,1,'NFRAME=','Enter the number of frames')
+        call userrpair(x_min,y_min,1,'SUB_MIN=',
+     &        'Enter minimum X,Y of subframe (m)')
+        call userrpair(x_max,y_max,1,'SUB_MAX=',
+     &        'Enter maximum X,Y of subframe (m)')
+        call userrpair(xstep,ystep,1,'SUB_STEP=',
+     &        'Enter stepsize in X,Y (m)')
+ 
+        L0=0.60
+        lo=0.02
+        call userrpair(L0,lo,2,'SCALE=',
+     &                'Enter outer,inner scale of turbulence (m)')
+ 
+        lambda=0.63e-6
+        fraction=0.00476
+        nsamp=3
+        call userreal(lambda,1,2,'LAMBDA=','Enter wavelength (m)')
+        call userreal(fraction,1,2,'FBAND=','Enter fractional bandwidth')
+        call userint(nsamp,1,2,'NSAMP=','Enter number of sampling points')
+ 
+        ncircle=1
+        c_rad(1)=1.
+        c_pos(1,1)=0.0
+        c_pos(1,2)=0.0
+        c_typ(1)=1
+        call userint(ncircle,1,1,'NCIRCLE=','Enter number of apertures')
+        do n=1,ncircle
+           call userrpair(c_pos(n,1),c_pos(n,2),1,'CPOS=',
+     &                   'Enter position in X,Y (m)')
+           call userreal(c_rad(n),1,1,'CRAD=','Enter radius (m)')
+           call userint(c_typ(n),1,1,'CTYPE=','Enter type (1=hole,0=void)')
+           c_rad(n+1)=c_rad(n)
+           c_pos(n+1,1)=c_pos(n,1)
+           c_pos(n+1,2)=c_pos(n,1)
+           c_typ(n+1)=c_typ(n)
+           call cancel('CPOS=')
+           call cancel('CRAD=')
+           call cancel('CTYPE=')
+        end do
+ 
+        ncomp=1
+        call userint(ncomp,1,1,'NCOMP=','Enter number of sources')
+        do n=1,ncomp
+           s_int(n)=1.
+           s_pos(n,1)=0.0
+           s_pos(n,2)=0.0
+           call userrpair(s_pos(n,1),s_pos(n,2),1,'SPOS=',
+     &                   'Enter position in X,Y (m)')
+           call userreal(s_int(n),1,1,'SINT=','Enter intensity')
+           call cancel('SPOS=')
+           call cancel('SINT=')
+        end do
+ 
+        no_dist=.FALSE.
+        w_screen=.FALSE.
+        w_image=.FALSE.
+        w_power=.TRUE.
+        call userlog(no_dist,1,2,'NDIST=','No disturbance?')
+        call userlog(w_screen,1,2,'WSCREEN=','Write screen data?')
+        call userlog(w_image, 1,2,'WIMAGE=', 'Write image plane?')
+        call userlog(w_power, 1,2,'WPOWER=', 'Write power spectrum?')
+ 
+        seed=7597551
+        call userint(seed,1,2,'SEED=','Enter seed for random generator')
+ 
+*       k: wave number, kap: spatial frequency in aperture plane
+ 
+        k = 2.0 * pi / lambda
+ 
+        if (Ls .lt. L0) then
+          kapmin = 2.0 * pi / Ls
+        else
+          kapmin = 2.0 * pi / L0
+        end if
+ 
+        if (lo .lt. Lp) then
+           kapmax = 2.0 * pi / Lp
+        else
+           kapmax = 2.0 * pi / lo
+        end if
+ 
+*       dkap: one pixel in spatial frequency in aperture plane
+        dkap = 2.0 * pi / Ls
+ 
+CHead Loop over frames
+ 
+*
+        write(1,*) 'frm_per_scr ',
+     1     (int((x_max-x_min)/xstep)+1)*(int((y_max-y_min)/ystep)+1)
+        call easyou(0)
+ 
+        iframe=1
+        iscreen=1
+        do while (iframe.le.nframe)
+*------------------------------------
+           if ( no_dist ) then
+*            no atmospheric disturbance
+             do iz=1, Ns
+               do jz=1, Ns
+                 psc(iz,jz) = (0.0,0.0)
+               end do
+             end do
+           else
+*            create a complex phase screen
+             write(comment,310) iscreen
+             call logline(comment)
+  310        format(' Generating ',i3,'th complex phase screen')
+             call  screen(psc, Ns, seed)
+             iscreen=iscreen+1
+             if (w_screen)
+     &           call psc_wscreen(psc,Ns,Ns,pdata1,pdata2,Np,Np)
+           end if
+ 
+*          sample phase screen, form images, calculate power
+           call  power(psc, Ns, pwr, Np, iframe, Maxcomp, Maxap,
+     1            s_int, s_pos, c_pos, c_rad, c_typ, pdata1, pdata2,
+     2            image1, image2, ary1, ary2, cary1, cary2)
+           if (w_image) call psc_wimage(ary1,ary2,Np,Np)
+        end do
+*
+ 
+*       write normalized integrated power spectrum
+ 
+        zero = pwr(Np/2+1,Np/2+1)
+        if (zero.eq.0.0) zero=1.0
+        write(1,*) 'Scaling: divide by ',zero
+        call easyou(0)
+*CMV REV
+        do ly=1, Np
+          do lx=1, Np
+            pwr(lx,ly) = pwr(lx,ly)/zero
+          end do
+        end do
+        type*,'Scaled'
+        if (w_power) call psc_wpower(pwr,Np,Np)
+*
+        n=0
+        call data_close(1,n)
+        n=0
+        call data_close(2,n)
+        n=0
+        call data_close(3,n)
+        call finis()
+ 
+        end
+ 
+CHead Compute phase screen
+ 
+        subroutine screen(psc, Ns, seed)
+***************************************************************************
+*       creates complex phase screen
+***************************************************************************
+        implicit  none
+        integer Ns,seed
+        complex psc(Ns,Ns)
+ 
+        real    pi,rapdeg,rapmin,rapsec,Ls,Lp
+        complex iu
+        real    k, kapmax, kapmin, L0, LCn2, dkap, lambda, fraction
+        real    x_min,x_max,xstep, y_min,y_max,ystep
+        integer ncomp,ncircle,nsamp,nframe
+*
+        common/psc/ pi,rapdeg,rapmin,rapsec, iu,
+     &              k, kapmax, kapmin, L0, LCn2, Ls, Lp,
+     &              dkap, lambda, nframe,
+     &              x_min, x_max, xstep, y_min, y_max, ystep,
+     &              ncomp, ncircle, nsamp, fraction
+ 
+*       radial spatial frequency in aperture plane
+        real   kap
+ 
+*       dimension array for fft, origin of the phase screen
+        integer   N(2), Nc
+ 
+        integer   i,j,jx,jy
+        real      Fs,Fs0,atten,radi,u,ran
+        character comment*80
+ 
+*------ generation of random phase in spatial domain -------------
+*       Complex Gaussian random numbers are generated by
+*       the inverse transform method.
+ 
+        N(1) = Ns
+        N(2) = Ns
+        call four2(psc,Ns,Ns,0)
+        Nc = Ns/2+1
+        Fs0 = 0.033*pi*LCn2*k*k*2.0*dkap*dkap
+*CMV REV
+        do 100 jy=1, Ns
+ 
+          if (mod(jy,100).eq.0) then
+             write(comment,*) 'Making line ',jy
+             call status(comment)
+          end if
+ 
+          do 110 jx=1, Ns
+ 
+            kap = dkap*sqrt( float( (jx-Nc)**2+(jy-Nc)**2 ) )
+ 
+*           introducing smooth cut-offs below kapmin and beyond kapmax.
+ 
+            if(kap .gt. kapmax) atten = exp(-(kap-kapmax)/(5.0*dkap))
+            if(kap .lt. kapmin) atten = exp(-(kapmin-kap)/(5.0*dkap))
+            if(kap.le.kapmax .and. kap.ge.kapmin) atten = 1.0
+ 
+*           kap**(-11/3) is undefined at kap=0.
+            if(kap .eq. 0.0) kap = dkap
+ 
+            u=0.0
+            do while (u.le.0.0)
+               u=ran(seed)
+            end do
+            radi = sqrt(-2.0*log(u))
+            Fs = Fs0*kap**(-11.0/3.0)
+            psc(jx,jy) = atten*sqrt(Fs)*radi*cexp(iu*2.0*pi*ran(seed))
+ 
+  110     continue
+  100   continue
+ 
+CPage
+ 
+*---------- Fourier transform ------------------------------
+*       shift origin of Fourier space to (Nc,Nc)
+*CMV REV
+        do j=1,Ns,2
+          do i=1,Ns,2
+            psc(i+1,j) = -psc(i+1,j)
+            psc(i,j+1) = -psc(i,j+1)
+          end do
+        end do
+ 
+        write(comment,555) N(1),N(2)
+        call logline(comment)
+  555   format(' ', 'start ',i3,'x',i3,' sized fft              ')
+        call four2(psc,Ns,Ns,-1)
+        write(comment,666)
+        call logline(comment)
+  666   format(' ', 'end fft for screen                         ')
+ 
+*       now psc is a complex random phase screen
+*       to avoid discontinuity shift origin of phase screen to (Nc,Nc)
+*CMV REV
+        do j=1,Ns,2
+          do i=1,Ns,2
+            psc(i+1,j) = -psc(i+1,j)
+            psc(i,j+1) = -psc(i,j+1)
+          end do
+        end do
+ 
+        return
+        end
+ 
+CHead Integrate power spectrum
+ 
+        subroutine power(psc, Ns, pwr, Np, iframe, Maxcomp, Maxap,
+     1          s_int, s_pos, c_pos, c_rad, c_typ, pdata1, pdata2,
+     2                   image1, image2, ary1, ary2, cary1, cary2)
+*******************************************************************************
+*       produces fringe/speckle patterns of multiple point sources.
+*       Finite bandwidth effect is taken into account.
+*******************************************************************************
+ 
+        implicit none
+        integer Ns,Np,iframe,Maxcomp,Maxap
+ 
+*       source information (intensity and position in arcsec)
+        real   s_int(Maxcomp), s_pos(Maxcomp,2)
+ 
+*       aperture information (coordinate, radius, type)
+        real   c_pos(Maxap,2), c_rad(Maxap)
+        integer   c_typ(Maxap)
+ 
+*       phase screen
+        complex psc(Ns,Ns)
+ 
+*       power spectrum
+        real   pwr(Np,Np)
+ 
+*       temporary arrays
+        real    image1(Np,Np), image2(Np,Np),  ary1(Np,Np), ary2(Np,Np)
+        complex pdata1(Np,Np), pdata2(Np,Np), cary1(Np,Np), cary2(Np,Np)
+ 
+*       common block
+        real    pi,rapdeg,rapmin,rapsec, Ls, Lp
+        complex iu
+        real    k, kapmax, kapmin, L0, LCn2, dkap, lambda, fraction
+        real    x_min,x_max,xstep, y_min,y_max,ystep
+        integer ncomp,ncircle,nsamp,nframe
+*
+        common/psc/ pi,rapdeg,rapmin,rapsec, iu,
+     &              k, kapmax, kapmin, L0, LCn2, Ls, Lp,
+     &              dkap, lambda, nframe,
+     &              x_min, x_max, xstep, y_min, y_max, ystep,
+     &              ncomp, ncircle, nsamp, fraction
+ 
+*
+        integer N(2),Wc,Npx
+        real    lpix,Scale,factor
+        real    x,y,xa,ya,ox,oy
+        integer ix,iy,jx,jy,lx,ly,dx,dy,iox,ioy
+        integer loop1,loop2,i
+        character comment*80
+ 
+        N(1) = Np
+        N(2) = Np
+        call four2(pdata1,Np,Np,0)
+        lpix = Ls/Ns
+        Wc = Np/2+1
+        Scale = Ls/lambda*Np/Ns*rapsec
+ 
+*       setting apertures on Np sized window in Ns sized complex phase screen
+ 
+        do 10 x=x_min,x_max,xstep
+        do 20 y=y_min,y_max,ystep
+**************************** major loop ***************************************
+ 
+           write(1,111) x,y
+           call easyou(0)
+  111      format(' ',' creating a pair of speckle/fringe patterns',1x,
+     1            'xy',f10.3,1x,f10.3)
+ 
+*       reset temporary arrays
+*CMV REV
+           do jy=1,Np
+             do jx=1,Np
+               image1(jx,jy) = 0.0
+               image2(jx,jy) = 0.0
+                 ary1(jx,jy) = 0.0
+                 ary2(jx,jy) = 0.0
+                cary1(jx,jy) = (0.0,0.0)
+                cary2(jx,jy) = (0.0,0.0)
+             end do
+           end do
+ 
+CHead Loop over waveband
+ 
+           do 100 loop1=1,nsamp
+ 
+*       reset pdata1 and pdata2
+*CMV REV
+             do iy=1, Np
+               do ix=1, Np
+                 pdata1(ix,iy) = (0.0,0.0)
+                 pdata2(ix,iy) = (0.0,0.0)
+               end do
+             end do
+ 
+**************** intermediate loop *****************
+*        nsamp data points within the bandpass
+             factor =  1.0 + fraction*float(loop1 - nsamp/2)
+ 
+             npx = 0
+ 
+             do 30 i=1,ncircle
+*-----------------------------------------
+*       filling pdata with aperture phases
+ 
+            do 40 xa = x+c_pos(i,1)-c_rad(i), x+c_pos(i,1)+c_rad(i), lpix
+            do 50 ya = y+c_pos(i,2)-c_rad(i), y+c_pos(i,2)+c_rad(i), lpix
+              ox = xa-x-c_pos(i,1)
+              oy = ya-y-c_pos(i,2)
+              if( ox*ox+oy*oy .lt. c_rad(i)*c_rad(i) ) then
+                ix = nint( (xa-x)/lpix )+Wc
+                iy = nint( (ya-y)/lpix )+Wc
+ 
+*       shift origin of the window to (Wc,Wc)
+                lx = nint(xa/lpix)
+                ly = nint(ya/lpix)
+ 
+                if( c_typ(i) .eq. 1) npx = npx+1
+                if( c_typ(i) .eq. 0) npx = npx-1
+ 
+                if( npx.eq.1 .or. mod(npx,100) .eq. 0 ) then
+                  write(comment,777) npx
+                  call status(comment)
+                end if
+  777   format('# of  positive pixels',1x,i5)
+ 
+                if( mod(ix+iy,2) .eq. 0 ) then
+                  pdata1(ix,iy) = cexp( iu*factor*real(psc(lx,ly)) )*c_typ(i)
+                  pdata2(ix,iy) = cexp(iu*factor*aimag(psc(lx,ly)) )*c_typ(i)
+                else
+                  pdata1(ix,iy) =-cexp( iu*factor*real(psc(lx,ly)) )*c_typ(i)
+                  pdata2(ix,iy) =-cexp(iu*factor*aimag(psc(lx,ly)) )*c_typ(i)
+                end if
+ 
+              end if
+   50       continue
+   40       continue
+*-----------------------------------------
+   30     continue
+ 
+*       simulate propagation from aperture plane to detector plane
+ 
+        call four2(pdata1,Np,Np,-1)
+        call four2(pdata2,Np,Np,-1)
+ 
+*       form speckle/fringe patterns
+*CMV REV
+        do iy=1, Np
+          do ix=1, Np
+            image1(ix,iy) = image1(ix,iy) +
+     1                      real( pdata1(ix,iy)*conjg(pdata1(ix,iy)) )
+            image2(ix,iy) = image2(ix,iy) +
+     2                      real( pdata2(ix,iy)*conjg(pdata2(ix,iy)) )
+          end do
+        end do
+ 
+******************* end of loop1 ********************
+  100   continue
+ 
+CHead Put in sources and make power spectrum
+ 
+        do 60 loop2=1,ncomp
+*--------------------------------------------
+*       ncomp components in source structure
+          dx = int(Scale * s_pos(loop2,1))
+          dy = int(Scale * s_pos(loop2,2))
+ 
+          iox=0
+          ioy=0
+          if (dx.lt.0) iox=dx
+          if (dy.lt.0) ioy=dy
+*CMV REV
+          do iy=1-ioy,Np-dy+ioy
+          do ix=1-iox,Np-dx+iox
+            ary1(ix+dx,iy+dy) = ary1(ix,iy)+s_int(loop2)*image1(ix,iy)
+            ary2(ix+dx,iy+dy) = ary2(ix,iy)+s_int(loop2)*image2(ix,iy)
+          end do
+          end do
+*-------------------------------------------
+   60   continue
+ 
+        write(comment,320) iframe
+        call logline(comment)
+ 
+*       shift origin of the image to (Wc,Wc) before fourier transform
+*CMV REV
+        do iy=1,Np,2
+        do ix=1,Np,2
+          cary1(ix,iy)     = ary1(ix,iy)
+          cary1(ix+1,iy+1) = ary1(ix+1,iy+1)
+          cary1(ix+1,iy)   =-ary1(ix+1,iy)
+          cary1(ix,iy+1)   =-ary1(ix,iy+1)
+        end do
+        end do
+ 
+        call four2(cary1,Np,Np,-1)
+ 
+*CMV REV
+        do jy=1,Np
+        do jx=1,Np
+          pwr(jx,jy) = pwr(jx,jy) + real(cary1(jx,jy)*conjg(cary1(jx,jy)))
+        end do
+        end do
+ 
+        iframe = iframe + 1
+        if( iframe .gt. nframe ) return
+ 
+        write(comment,320) iframe
+        call logline(comment)
+  320   format(' ', 'processing ',i4,' th frame                    ')
+ 
+*       shift origin of the image to (Wc,Wc) before fourier transform
+*CMV REV
+        do iy=1,Np,2
+        do ix=1,Np,2
+          cary2(ix,iy)     = ary2(ix,iy)
+          cary2(ix+1,iy+1) = ary2(ix+1,iy+1)
+          cary2(ix+1,iy)   =-ary2(ix+1,iy)
+          cary2(ix,iy+1)   =-ary2(ix,iy+1)
+        end do
+        end do
+ 
+        call four2(cary2,Np,Np,-1)
+*CMV REV
+        do jy=1,Np
+        do jx=1,Np
+          pwr(jx,jy) = pwr(jx,jy) + real(cary2(jx,jy)*conjg(cary2(jx,jy)))
+        end do
+        end do
+ 
+        iframe = iframe + 1
+        if( iframe .gt. nframe) return
+ 
+************************* end of major loop ***********************************
+   20   continue
+   10   continue
+ 
+        end
+ 
+CHead Subroutine to write phase screen
+ 
+        subroutine psc_wscreen(array,dx,dy,rbuf,ibuf,nx,ny)
+c
+        implicit  none
+        integer   dx,dy,nx,ny
+        complex   array(dx,dy)
+        real      rbuf(nx,ny),ibuf(nx,ny)
+        character ofile*25,otype*10,oform*5
+        integer   err,ix,iy,x0,y0
+        logical   first
+        data      first/.TRUE./
+        save      first
+c
+        err=0
+        if (first) then
+           first=.false.
+           ofile=' '
+           otype='GHRIL'
+           oform='-32'
+           call usertext(ofile,1,'SFILE=',
+     &                  'Enter filename for phase-screen')
+           call usertext(otype,2,'STYPE=','Enter file-type')
+           call usertext(oform,2,'SFORM=','Enter format for GHRIL-file')
+           call data_open(1,ofile,otype,'WRITE',err)
+           call data_wkey(1,'OBJECT','Screen',' ',err)
+           call date_header(1,'DATE','TIME')
+        end if
+*
+*       Write each screen in eight parts: re,im ...
+*
+        do x0=0,dx-1,nx
+          do y0=0,dy-1,nx
+*CMV REV
+             do iy=1,ny
+               do ix=1,nx
+                  rbuf(ix,iy)= real(array(x0+ix,y0+iy))
+                  ibuf(ix,iy)=aimag(array(x0+ix,y0+iy))
+               end do
+             end do
+             call data_write(1,0,0,1,nx,ny,rbuf,0,0,nx,oform,err)
+             call data_write(1,0,0,1,nx,ny,ibuf,0,0,nx,oform,err)
+          end do
+        end do
+        call data_error(err)
+        return
+        end
+ 
+CHead Subroutine to write image plane
+ 
+        subroutine psc_wimage(array1,array2,dx,dy)
+c
+        implicit  none
+        real      array1(*),array2(*)
+        integer   dx,dy
+        character ofile*25,otype*10,oform*5
+        integer   err
+        logical   first
+        data      first/.TRUE./
+        save      first
+c
+        err=0
+        if (first) then
+           first=.false.
+           ofile=' '
+           otype='GHRIL'
+           oform='-32'
+           call usertext(ofile,1,'IFILE=',
+     &                  'Enter filename for image-plane')
+           call usertext(otype,2,'ITYPE=','Enter file-type')
+           call usertext(oform,2,'SFORM=','Enter format for GHRIL-file')
+           call data_open(2,ofile,otype,'WRITE',err)
+           call data_wkey(2,'OBJECT','Image',' ',err)
+           call date_header(2,'DATE','TIME')
+        end if
+        call data_write(2,0,0,1,dx,dy,array1,0,0,dx,oform,err)
+        call data_write(2,0,0,1,dx,dy,array2,0,0,dx,oform,err)
+        call data_error(err)
+        return
+        end
+ 
+CHead Subroutine to write phase screen
+ 
+        subroutine psc_wpower(array,dx,dy)
+c
+        implicit  none
+        real      array(*)
+        integer   dx,dy
+        character ofile*25,otype*10,oform*5
+        integer   err
+        logical   first
+        data      first/.TRUE./
+        save      first
+c
+        err=0
+        if (first) then
+           first=.false.
+           ofile=' '
+           otype='GHRIL'
+           oform='-32'
+           call usertext(ofile,1,'PFILE=',
+     &                  'Enter filename for power spectrum')
+           call usertext(otype,2,'PTYPE=','Enter file-type')
+           call usertext(oform,2,'SFORM=','Enter format for GHRIL-file')
+           call data_open(3,ofile,otype,'WRITE',err)
+           call data_wkey(3,'OBJECT','Power',' ',err)
+           call date_header(3,'DATE','TIME')
+        end if
+        call data_write(3,0,0,1,dx,dy,array,0,0,dx,oform,err)
+        call data_error(err)
+        return
+        end
+
+From:	NL%"DEVOSCM@RUGR86.RUG.NL"      "Marco de Vos, Kapteyn Lab, Groningen"  7-NOV-1991 11:13:25.46
+To:	prieur@fromp51.BITNET
+CC:	
+Subj:	five_15d.dat
+ 
+!*******************************************************************************
+! five_15d.dat
+!*******************************************************************************
+! Phase screen simulation --- five hole short baseline, 30 angstrom bandpass
+! The size of each hole is 15 cm in diameter.
+! Effect of diffraction is studied by setting the upper cut-off
+!fluctuation scale to 60 cm = 4 x 15.
+!-------------------------------------------------------------------------------
+! seed for random number generator
+Random
+975317
+! outer scale and inner scale of the turbulence(m) -- Diffraction only
+Turbulence
+0.60 0.02
+! central wavelength(m), fractional bandwidth, # of sampling points
+Wavelength
+0.63e-6 0.00476 3
+! source: # of point sources
+!         intensity(arbitrary unit), position offset(x,y) in arcsecond
+Source
+1
+1.0   0.0  0.0
+! # of circular apertures (including voids)
+! configuraton: center of aperture(x,y), radius(m) and type ( 0 or 1 ).
+! 1 is an aperture,0 is a void. Voids should follow ordinary apertures.
+! 5 hole short baseline
+Aperture
+5
+-0.014   0.789 0.075  1
++1.189  -0.099 0.075  1
++0.026  -0.789 0.075  1
++0.341  -1.381 0.075  1
++0.775  -0.986 0.075  1
+! Multiple subsets are taken from one phase screen.
+! Equally spaced sampling is specified by
+! x_min, x_max, step size in x(m)
+! y_min, y_max, step size in y(m)
+! Translation in x-direction, 41 frames per screen
+Phase_screen
+2.5 8.5  0.15
+2.5 8.5  8.0
+! total number of frames to be processed
+Frame
+50
+********************************************************************
+********************************************************************
+********************************************************************
+********************************************************************
+
+From:	NL%"DEVOSCM@RUGR86.RUG.NL"      "Marco de Vos, Kapteyn Lab, Groningen"  7-NOV-1991 11:13:28.78
+To:	prieur@fromp51.BITNET
+CC:	
+Subj:	psctest.lrn
+
+*
+*   Test of Unix version
+*
+NFRAME= 5,WSCREEN=N,WIMAGE=N,WPOWER=Y
+SUB_MIN=
+SUB_MAX=
+SUB_STEP=
+*
+*   Definition of apertures
+*
+NCIRCLE=  5
+CPOS=  -0.014  0.789, CRAD= .075, CTYPE= 1
+CPOS=   1.189 -0.099, CRAD= .075, CTYPE= 1
+CPOS=   0.026 -0.789, CRAD= .075, CTYPE= 1
+CPOS=   0.341 -1.381, CRAD= .075, CTYPE= 1
+CPOS=   0.775 -0.986, CRAD= .075, CTYPE= 1
+*
+*   Definition of sources
+*
+NCOMP=
+SPOS=
+SINT=
+***********************************************************
+***********************************************************
+***********************************************************
+***********************************************************
+
+From:	NL%"DEVOSCM@RUGR86.RUG.NL"      "Marco de Vos, Kapteyn Lab, Groningen"  7-NOV-1991 11:13:31.86
+To:	prieur@fromp51.BITNET
+CC:	
+Subj:	four2.for
+
+       SUBROUTINE FOUR2(DATA,DL,DM,ISIGN)
+C
+C ---  -----------------------------------------------------------
+C      Four2 makes a fast fourier transform of the complex data
+C      in data (data(i) is real part, data(i+1) is complex part.
+C      The axes have length dl and dm. Set isign to either -1
+C      or 1 (inv), in the last case, data is scaled by 1/(dl*dm).
+C ---  -----------------------------------------------------------
+C
+       IMPLICIT NONE
+        CHARACTER ID_X*(36)
+        DATA      ID_X/'!@(#) four2.f    23/08/91 v3.01 >'/
+       REAL    DATA(*)
+       INTEGER DL,DM,ISIGN
+       REAL*8 WR,WI,WPR,WPI,WTEMP,THETA
+       integer i1, i2, i2rev, i3, i3rev, ibit, idim, ifp1, ifp2
+       integer ip1, ip2, ip3, itot, k1, k2, n, nprev, nrem, ntot
+       real    fac, tempi, tempr
+c
+       if (isign.eq.0) return
+c
+       NTOT=DL*DM
+       if (isign.gt.0) then
+          fac = 1.0/float(ntot)
+          DO 102 itot = 1, 2*ntot
+             data(itot) = fac * data(itot)
+  102     CONTINUE
+       endif
+c
+       NPREV=1
+       N=DL
+       DO 18 IDIM=1,2
+*        N=NN(IDIM)
+         NREM=NTOT/(N*NPREV)
+         IP1=2*NPREV
+         IP2=IP1*N
+         IP3=IP2*NREM
+         I2REV=1
+         DO 14 I2=1,IP2,IP1
+           IF(I2.LT.I2REV)THEN
+             DO 13 I1=I2,I2+IP1-2,2
+               DO 12 I3=I1,IP3,IP2
+                 I3REV=I2REV+I3-I2
+                 TEMPR=DATA(I3)
+                 TEMPI=DATA(I3+1)
+                 DATA(I3)=DATA(I3REV)
+                 DATA(I3+1)=DATA(I3REV+1)
+                 DATA(I3REV)=TEMPR
+                 DATA(I3REV+1)=TEMPI
+12             CONTINUE
+13           CONTINUE
+           ENDIF
+           IBIT=IP2/2
+1          IF ((IBIT.GE.IP1).AND.(I2REV.GT.IBIT)) THEN
+             I2REV=I2REV-IBIT
+             IBIT=IBIT/2
+           GO TO 1
+           ENDIF
+           I2REV=I2REV+IBIT
+14       CONTINUE
+         IFP1=IP1
+2        IF(IFP1.LT.IP2)THEN
+           IFP2=2*IFP1
+           THETA=ISIGN*6.28318530717959D0/(IFP2/IP1)
+           WPR=-2.D0*DSIN(0.5D0*THETA)**2
+           WPI=DSIN(THETA)
+           WR=1.D0
+           WI=0.D0
+           DO 17 I3=1,IFP1,IP1
+             DO 16 I1=I3,I3+IP1-2,2
+               DO 15 I2=I1,IP3,IFP2
+                 K1=I2
+                 K2=K1+IFP1
+                 TEMPR=SNGL(WR)*DATA(K2)-SNGL(WI)*DATA(K2+1)
+                 TEMPI=SNGL(WR)*DATA(K2+1)+SNGL(WI)*DATA(K2)
+                 DATA(K2)=DATA(K1)-TEMPR
+                 DATA(K2+1)=DATA(K1+1)-TEMPI
+                 DATA(K1)=DATA(K1)+TEMPR
+                 DATA(K1+1)=DATA(K1+1)+TEMPI
+15             CONTINUE
+16           CONTINUE
+             WTEMP=WR
+             WR=WR*WPR-WI*WPI+WR
+             WI=WI*WPR+WTEMP*WPI+WI
+17         CONTINUE
+           IFP1=IFP2
+         GO TO 2
+         ENDIF
+         NPREV=N*NPREV
+         N=DM
+18     CONTINUE
+       RETURN
+       END
+**************************************************************
+**************************************************************
+**************************************************************
+**************************************************************
+
+From:	NL%"DEVOSCM@RUGR86.RUG.NL"      "Marco de Vos, Kapteyn Lab, Groningen"  7-NOV-1991 11:13:51.57
+To:	prieur@fromp51.BITNET
+CC:	
+Subj:	pscorg.for
+
+        program pscfig2
+*******************************************************************************
+*
+*       is a phase screen simulator which produces artificial fringe
+*       or speckle patterns and obtain integrated power spectrum or(/and)
+*       optionally specified bispectral components.
+*       The atmospheric disturbance is given by the Kolmogorov spectrum.
+*       Seeing condition, aperture configuration and the object ( at this
+*       point, only multiple point sources ) and the usage of the phase screen
+*       must be specified by the user in an ascii input file.
+*
+*       Following is a sample input file. (free format, ! indicates a
+*       comment line.)
+*
+*       ! seed for random number generator (large odd integer)
+*       Random
+*       7597551
+*       ! outer scale and inner scale of the turbulence(m) - recommended values
+*       Turbulence
+*       10.0  0.01
+*       ! central wavelength(m), fractional bandwidth, sampling points
+*       Wavelength
+*       0.65e-6 0.016 3
+*       ! source: # of point sources
+*       !         intensity(arbitrary unit), position offset(x,y) in arcsecond
+*       Source
+*       2
+*       1.0   0.0  0.0
+*       0.5   0.02 0.02
+*       ! # of circular apertures (including voids)
+*       ! configuraton: center of aperture(x,y), radius(m) and type
+*       ! 1 is an aperture,0 is a void. Voids should follow ordinary apertures.
+*       ! Example: annular mask
+*       Aperture
+*       2
+*       0.0 0.0 2.0  1
+*       0.0 0.0 1.9  0
+*       ! Multiple subsets are taken out of one phase screen.
+*       ! Equally spaced sampling is specified by
+*       ! x_min, x_max, step size in x(m)
+*       ! y_min, y_max, step size in y(m)
+*       Phase_screen
+*       1.25 8.75  0.14
+*       1.25 8.75  2.5
+*       ! total number of frames to be processed
+*       Frame
+*       100
+*       ------ as an option `no atmosphere' can be specified by ------
+*       ! obtaining beam pattern
+*       No_disturbance
+*       --------------------------------------------------------------
+*
+*       Written in standard FORTRAN and expected to run both on VMS and UNIX
+*       simply by replacing FFT routines and random number generator.
+*       On UNIX all tempory arrays are to be dynamically allocated by 'calloc()'
+*       Source code should be called pscreen.for on VMS, pscreen.f on UNIX.
+*       On a vector machine, effeciency of loops should be reconsidered.
+*
+*       This is a re-organized version of the pscsn.for developed on Tacos.
+*       The program is planned to be as users oriented as possible for the
+*       future development of Optical/IR interferometry.
+*
+*       version 1.0    Dec 25, 1988 (Merry Christmas!)     Tadashi Nakajima
+*       Today's resolution : `I will have real holidays next year and live
+*                             a human life.'
+*       version 2.0    Dec 30, 1988   Now sharp cut-offs of fluctuation power
+*       spectrum at kapmin and kapmax are introduced to investigatate the
+*       relative significance of the diffractive effect and refractive effect.
+*       For instance, the refractive effect can be seen by setting lo = 0.1,
+*       while the diffractive effect can be investigated by setting L0 = 0.4.
+*******************************************************************************
+*------ declarations ---------*
+*       constants
+        real*4    pi, rapdeg, rapmin, rapsec
+        complex iu
+ 
+*       record size
+        integer*4  RECS
+        parameter( RECS = 512 )
+ 
+*       integrated structure constant of the phase fluctuation
+        real*4 LCn2
+ 
+*       size of phase screen and resolution (m/pix)
+        real*4 Ls, Lp
+        parameter( Ls = 10.24 )
+        parameter( Lp = 0.02  )
+ 
+*       size of phase screen, size of power spectrum
+        integer*4 Ns, Np
+        parameter( Ns = 512  )
+        parameter( Np = Ns/2 )
+ 
+*       wave number, spatial frequencies and scale length of tubulence
+        real k, kapmax, kapmin, L0, dkap, lambda, lo
+ 
+*       complex phase screen, real and imag are independent.
+        complex psc(Ns,Ns)
+ 
+*       power spectrum array
+        real*4 pwr(Np,Np)
+ 
+*       input control parameter file and output power spectrum file
+        character*30 ifile, ofile
+ 
+*       I/O units
+        integer*4 f_in, f_out
+        parameter( f_in = 11, f_out = 12 )
+ 
+*       # of frames, # of screens, # of frames per screen
+        integer*4  nframe, nscreen, frm_per_scr
+ 
+*       maximum # of components in source, maximum number of apertures
+        integer*4 Maxcomp, Maxap
+        parameter( Maxcomp = 50, Maxap = 15 )
+ 
+*       source information (intensity and position in arcsec)
+        real*4 s_int(Maxcomp), s_pos(Maxcomp,2)
+ 
+*       aperture information (coordinate, radius, type)
+        real*4 c_pos(Maxap,2), c_rad(Maxap)
+        integer*4 c_typ(Maxap)
+*
+        common pi,rapdeg,rapmin,rapsec, iu
+        common k, kapmax, kapmin, L0, LCn2, dkap, lambda
+        common nframe, nscreen, frm_per_scr
+        common x_min, x_max, xstep, y_min, y_max, ystep
+        common ncomp, ncircle, nsamp, fraction
+ 
+*       work area for subroutine power
+        real*4  image1(Np,Np), image2(Np,Np),  ary1(Np,Np), ary2(Np,Np)
+        complex pdata1(Np,Np), pdata2(Np,Np), cary1(Np,Np), cary2(Np,Np)
+ 
+*       variables local to main program
+        character*80 comment
+        integer*4 seed, no_dist
+ 
+*       common variables are not compatible with parameter statement.
+        pi = 3.141592653
+        rapdeg = pi/180.0
+        rapmin = rapdeg/60.0
+        rapsec = rapdeg/3600.0
+        iu = (0.0,1.0)
+        LCn2 = 5.0e-13
+ 
+ 
+*       input file names
+        write(*,10)
+   10   format(1x,' input ascii file name : ',$)
+        read(*,'(a)') ifile
+        write(*,20)
+   20   format(1x,'output power file name : ',$)
+        read(*,'(a)') ofile
+        write(*,25)
+   25   format(1x)
+ 
+*       read the input file
+        open(unit=f_in, name=ifile, status='old')
+ 
+   30   format(a80)
+   35   format(1x,a80)
+        do 40 j=1,100
+ 
+          read(f_in,30,end=100) comment
+          write(*,35) comment
+ 
+          if( comment(1:1) .eq. '!') goto 40
+          if( comment(1:1) .eq. 'R' .or. comment(1:1) .eq. 'r') then
+            read(f_in,*) seed
+            backspace f_in
+            read(f_in,30,end=100) comment
+            write(*,35) comment
+          end if
+          if( comment(1:1) .eq. 'T' .or. comment(1:1) .eq. 't') then
+            read(f_in,*) L0, lo
+            backspace f_in
+            read(f_in,30,end=100) comment
+            write(*,35) comment
+          end if
+          if( comment(1:1) .eq. 'W' .or. comment(1:1) .eq. 'w') then
+            read(f_in,*) lambda, fraction, nsamp
+            backspace f_in
+            read(f_in,30,end=100) comment
+            write(*,35) comment
+          end if
+          if( comment(1:1) .eq. 'S' .or. comment(1:1) .eq. 's') then
+            read(f_in,*) ncomp
+            backspace f_in
+            read(f_in,30,end=100) comment
+            write(*,35) comment
+            do n=1,ncomp
+              read(f_in,*) s_int(n),s_pos(n,1),s_pos(n,2)
+              backspace f_in
+              read(f_in,30,end=100) comment
+              write(*,35) comment
+            end do
+          end if
+          if( comment(1:1) .eq. 'A' .or. comment(1:1) .eq. 'a') then
+            read(f_in,*) ncircle
+              backspace f_in
+              read(f_in,30,end=100) comment
+              write(*,35) comment
+            do n=1,ncircle
+              read(f_in,*) c_pos(n,1),c_pos(n,2),c_rad(n),c_typ(n)
+              backspace f_in
+              read(f_in,30,end=100) comment
+              write(*,35) comment
+            end do
+          end if
+          if( comment(1:1) .eq. 'P' .or. comment(1:1) .eq. 'p') then
+            read(f_in,*) x_min, x_max, xstep
+            backspace f_in
+            read(f_in,30,end=100) comment
+            write(*,35) comment
+            read(f_in,*) y_min, y_max, ystep
+            backspace f_in
+            read(f_in,30,end=100) comment
+            write(*,35) comment
+          end if
+          if( comment(1:1) .eq. 'F' .or. comment(1:1) .eq. 'f') then
+            read(f_in,*) nframe
+            backspace f_in
+            read(f_in,30,end=100) comment
+            write(*,35) comment
+          end if
+          if( comment(1:1) .eq. 'N' .or. comment(1:1) .eq. 'n') then
+            no_dist = 1
+          end if
+ 
+   40   continue
+  100   continue
+ 
+*       k: wave number, kap: spatial frequency in aperture plane
+ 
+        k = 2.0 * pi / lambda
+ 
+        if (Ls .lt. L0) then
+          kapmin = 2.0 * pi / Ls
+        else
+          kapmin = 2.0 * pi / L0
+        end if
+ 
+        if (lo .lt. Lp) then
+           kapmax = 2.0 * pi / Lp
+        else
+           kapmax = 2.0 * pi / lo
+        end if
+ 
+*       dkap: one pixel in spatial frequency in aperture plane
+        dkap = 2.0 * pi / Ls
+*
+        frm_per_scr =
+     1  (int((x_max-x_min)/xstep)+1)*(int((y_max-y_min)/ystep)+1)
+        type *, 'frm_per_scr ',frm_per_scr
+*
+        if( mod(nframe,frm_per_scr) .eq. 0 ) then
+          nscreen = nframe / frm_per_scr
+        else
+          nscreen = nframe / frm_per_scr + 1
+        end if
+ 
+*       Two real phase screens per complex random number generation in Fourier
+*       domain.
+ 
+        if( mod(nscreen,2) .eq. 0 ) then
+          ncall = nscreen/2
+        else
+          ncall = nscreen/2 + 1
+        end if
+ 
+        do 300 i = 1, ncall
+*------------------------------------
+        if ( no_dist .eq. 1 ) then
+*       no atmospheric disturbance
+          do iz=1, Ns
+            do jz=1, Ns
+              psc(iz,jz) = (0.0,0.0)
+            end do
+          end do
+        else
+*       create a complex phase screen
+        write(*,310) i
+  310   format('+', 'generating ',i3,'th complex phase screen')
+        call  screen(psc, Ns, seed)
+        end if
+ 
+*       sample phase screen, form images, calculate power
+ 
+        call  power(psc, Ns, pwr, Np, iframe, Maxcomp, Maxap,
+     1     s_int, s_pos, c_pos, c_rad, c_typ, pdata1, pdata2,
+     2             image1, image2, ary1, ary2, cary1, cary2)
+ 
+          if(iframe .ge. nframe) goto 400
+*
+*------------------------------------
+  300   continue
+*
+ 
+*       normalize integrated power spectrum
+  400   zero = pwr(Np/2+1,Np/2+1)
+        do lx=1, Np
+          do ly=1, Np
+            pwr(lx,ly) = pwr(lx,ly)/zero
+          end do
+        end do
+ 
+*       create a figaro file
+ 
+        No = Np*Np
+        call dta_asfnam('output', ofile//'.dst','new',0,'power',is1)
+        call dta_crvar('output.z', 'struct',is2)
+        call dta_crvar('output.z.data[256,256]', 'float',is3)
+        call dta_wrvarf('output.z.data',  No, pwr, is4)
+        call dta_fclose('output',is5)
+        if( abs(is1)+abs(is2)+abs(is3)+abs(is4)+abs(is5) .eq. 0 ) then
+          call lib$put_output('.dst file was created successfully.')
+        else
+          type *,'is1 is2 is3 is4 is5',is1,is2,is3,is4,is5
+        end if
+*
+        end
+ 
+ 
+        subroutine screen(psc, Ns, seed)
+***************************************************************************
+*       creates complex phase screen
+***************************************************************************
+        complex psc(Ns,Ns)
+        real*4 k, kapmax, kapmin, L0, LCn2, dkap
+        integer*4 frm_per_scr
+        complex iu
+        common pi,rapdeg,rapmin,rapsec, iu
+        common k, kapmax, kapmin, L0, LCn2, dkap, lambda
+        common nframe, nscreen, frm_per_scr
+        common x_min, x_max, xstep, y_min, y_max, ystep
+        common ncomp, ncircle, nsamp, fraction
+ 
+*       radial spatial frequency in aperture plane
+        real*4 kap
+ 
+*       seed for the random number generator, dimension array for fft
+*       origin of the phase screen
+        integer*4 seed, N(2), Nc
+ 
+*------ generation of random phase in spatial domain -------------
+*       Complex Gaussian random numbers are generated by
+*       the inverse transform method.
+ 
+        N(1) = Ns
+        N(2) = Ns
+        Nc = Ns/2+1
+ 
+        do 100 jx=1, Ns
+          do 110 jy=1, Ns
+ 
+            kap = dkap*sqrt( float( (jx-Nc)**2+(jy-Nc)**2 ) )
+ 
+*           introducing smooth cut-offs below kapmin and beyond kapmax.
+ 
+            if(kap .gt. kapmax) atten = exp(-(kap-kapmax)/(5.0*dkap))
+            if(kap .lt. kapmin) atten = exp(-(kapmin-kap)/(5.0*dkap))
+            if(kap.le.kapmax .and. kap.ge.kapmin) atten = 1.0
+ 
+*           kap**(-11/3) is undefined at kap=0.
+            if(kap .eq. 0.0) kap = dkap
+ 
+   10       u = ran(seed)
+            if ( u.gt.0.0 ) then
+              radi = sqrt(-2.0*log(u))
+            else
+              goto 10
+            end if
+            Fs = 0.033*pi*LCn2*k*k*2.0*kap**(-11.0/3.0)*dkap*dkap
+            psc(jx,jy) = atten*sqrt(Fs)*radi*cexp(iu*2.0*pi*ran(seed))
+ 
+  110     continue
+  100   continue
+ 
+*---------- Fourier transform ------------------------------
+*       shift origin of Fourier space to (Nc,Nc)
+        do i=1,Ns,2
+          do j=1,Ns,2
+            psc(i+1,j) = -psc(i+1,j)
+            psc(i,j+1) = -psc(i,j+1)
+          end do
+        end do
+ 
+        write(*,555) N(1),N(2)
+  555   format('+', 'start ',i3,'x',i3,' sized fft              ')
+        call four2(psc,N,2,-1,+1)
+        write(*,666)
+  666   format('+', 'end fft for screen                         ')
+ 
+*       now psc is a complex random phase screen
+*       to avoid discontinuity shift origin of phase screen to (Nc,Nc)
+        do i=1,Ns,2
+          do j=1,Ns,2
+            psc(i+1,j) = -psc(i+1,j)
+            psc(i,j+1) = -psc(i,j+1)
+          end do
+        end do
+ 
+        return
+        end
+ 
+ 
+        subroutine power(psc, Ns, pwr, Np, iframe, Maxcomp, Maxap,
+     1          s_int, s_pos, c_pos, c_rad, c_typ, pdata1, pdata2,
+     2                   image1, image2, ary1, ary2, cary1, cary2)
+*******************************************************************************
+*       produces fringe/speckle patterns of multiple point sources.
+*       Finite bandwidth effect is taken into account.
+*******************************************************************************
+*       source information (intensity and position in arcsec)
+        real*4 s_int(Maxcomp), s_pos(Maxcomp,2)
+*       aperture information (coordinate, radius, type)
+        real*4 c_pos(Maxap,2), c_rad(Maxap)
+        integer*4 c_typ(Maxap)
+        real*4  lpix
+        complex psc(Ns,Ns)
+        real*4 k, kapmax, kapmin, Lo, LCn2, dkap
+        integer*4 frm_per_scr
+        complex iu
+ 
+        common pi,rapdeg,rapmin,rapsec,iu
+        common k, kapmax, kapmin, L0, LCn2, dkap, lambda
+        common nframe, nscreen, frm_per_scr
+        common x_min, x_max, xstep, y_min, y_max, ystep
+        common ncomp, ncircle, nsamp, fraction
+*
+        integer*4 N(2)
+ 
+*       power spectrum
+        real*4 pwr(Np,Np)
+ 
+*       temporary arrays
+        real*4  image1(Np,Np), image2(Np,Np),  ary1(Np,Np), ary2(Np,Np)
+        complex pdata1(Np,Np), pdata2(Np,Np), cary1(Np,Np), cary2(Np,Np)
+ 
+ 
+        N(1) = Np
+        N(2) = Np
+        lpix = 10.24/Ns
+        Wc = Np/2+1
+        Scale = Ls/lambda*Np/Ns*rapsec
+ 
+*       setting apertures on Np sized window in Ns sized complex phase screen
+ 
+        do 10 x=x_min,x_max,xstep
+        do 20 y=y_min,y_max,ystep
+**************************** major loop ***************************************
+ 
+        write(*,111) x,y
+  111   format('+',' creating a pair of speckle/fringe patterns',1x,
+     1         'xy',f10.3,1x,f10.3)
+ 
+        write(*,333) ncircle, nsamp, c_typ(1), c_typ(2)
+  333   format(1x,'ncircle nsamp typ(1) typ(2) ',1x,4(i2,1x) )
+ 
+ 
+        do 100 loop1=1,nsamp
+**************** intermediate loop *****************
+*        nsamp data points within the bandpass
+         factor =  1.0 + fraction*(loop1 - nsamp/2)
+ 
+         npx = 0
+ 
+          do 30 i=1,ncircle
+*-----------------------------------------
+*       filling pdata with aperture phases
+ 
+            do 40 xa = x+c_pos(i,1)-c_rad(i), x+c_pos(i,1)+c_rad(i), lpix
+            do 50 ya = y+c_pos(i,2)-c_rad(i), y+c_pos(i,2)+c_rad(i), lpix
+              ox = xa-x-c_pos(i,1)
+              oy = ya-y-c_pos(i,2)
+              if( ox*ox+oy*oy .lt. c_rad(i)*c_rad(i) ) then
+                ix = nint( (xa-x)/lpix )+Wc
+                iy = nint( (ya-y)/lpix )+Wc
+ 
+*       shift origin of the window to (Wc,Wc)
+                lx = nint(xa/lpix)
+                ly = nint(ya/lpix)
+ 
+                if( c_typ(i) .eq. 1) npx = npx+1
+                if( c_typ(i) .eq. 0) npx = npx-1
+ 
+                if( mod(npx,100) .eq. 0 ) then
+                  write(*,777) npx
+                end if
+  777   format('+', '# of  positive pixels',1x,i5)
+ 
+                if( mod(ix+iy,2) .eq. 0 ) then
+                  pdata1(ix,iy) = cexp( iu*factor*real(psc(lx,ly)) )*c_typ(i)
+                  pdata2(ix,iy) = cexp(iu*factor*aimag(psc(lx,ly)) )*c_typ(i)
+                else
+                  pdata1(ix,iy) =-cexp( iu*factor*real(psc(lx,ly)) )*c_typ(i)
+                  pdata2(ix,iy) =-cexp(iu*factor*aimag(psc(lx,ly)) )*c_typ(i)
+                end if
+ 
+              end if
+   50       continue
+   40       continue
+*-----------------------------------------
+   30     continue
+ 
+*       simulate propagation from aperture plane to detector plane
+ 
+        call four2(pdata1,N,2,-1,+1)
+        call four2(pdata2,N,2,-1,+1)
+ 
+*       form speckle/fringe patterns
+        do ix=1, Np
+          do iy=1, Np
+            image1(ix,iy) = image1(ix,iy) +
+     1                      real(pdata1(ix,iy)*conjg(pdata1(ix,iy)))
+            image2(ix,iy) = image2(ix,iy) +
+     2                      real(pdata2(ix,iy)*conjg(pdata2(ix,iy)))
+          end do
+        end do
+ 
+*       reset pdata1 and pdata2
+        do ix=1, Np
+          do iy=1, Np
+            pdata1(ix,iy) = (0.0,0.0)
+            pdata2(ix,iy) = (0.0,0.0)
+          end do
+        end do
+ 
+******************* end of loop1 ********************
+  100   continue
+ 
+        do 60 loop2=1,ncomp
+*--------------------------------------------
+*       ncomp components in source structure
+          dx = int(Scale * s_pos(loop2,1))
+          dy = int(Scale * s_pos(loop2,2))
+ 
+        if( dx .ge. 0 .and. dy. ge. 0) then
+          do ix=1,Np-dx
+          do iy=1,Np-dy
+            ary1(ix+dx,iy+dy) = ary1(ix,iy)+s_int(loop2)*image1(ix,iy)
+            ary2(ix+dx,iy+dy) = ary2(ix,iy)+s_int(loop2)*image2(ix,iy)
+          end do
+          end do
+        end if
+ 
+        if( dx .ge. 0 .and. dy. lt. 0) then
+          do ix=1,Np-dx
+          do iy=-dy+1,Np
+            ary1(ix+dx,iy+dy) = ary1(ix,iy)+s_int(loop2)*image1(ix,iy)
+            ary2(ix+dx,iy+dy) = ary2(ix,iy)+s_int(loop2)*image2(ix,iy)
+          end do
+          end do
+        end if
+ 
+        if( dx.lt.0 .and. dy.ge.0) then
+          do ix=-dx+1,Np
+          do iy=1,Np-dy
+            ary1(ix+dx,iy+dy) = ary1(ix,iy)+s_int(loop2)*image1(ix,iy)
+            ary2(ix+dx,iy+dy) = ary2(ix,iy)+s_int(loop2)*image2(ix,iy)
+          end do
+          end do
+        end if
+ 
+        if( dx.lt.0 .and. dy.lt.0) then
+          do ix=-dx+1,Np
+          do iy=-dy+1,Np
+            ary1(ix+dx,iy+dy) = ary1(ix,iy)+s_int(loop2)*image1(ix,iy)
+            ary2(ix+dx,iy+dy) = ary2(ix,iy)+s_int(loop2)*image2(ix,iy)
+          end do
+          end do
+        end if
+*-------------------------------------------
+   60   continue
+ 
+ 
+        write(*,320) iframe+1
+ 
+*       shift origin of the image to (Wc,Wc) before fourier transform
+        do ix=1,Np,2
+        do iy=1,Np,2
+          cary1(ix,iy)     = ary1(ix,iy)
+          cary1(ix+1,iy+1) = ary1(ix+1,iy+1)
+          cary1(ix+1,iy)   =-ary1(ix+1,iy)
+          cary1(ix,iy+1)   =-ary1(ix,iy+1)
+        end do
+        end do
+ 
+        call four2(cary1,N,2,-1,+1)
+ 
+        do jx=1,Np
+        do jy=1,Np
+          pwr(jx,jy) = pwr(jx,jy) + real(cary1(jx,jy)*conjg(cary1(jx,jy)))
+        end do
+        end do
+ 
+        iframe = iframe + 1
+        if( iframe .ge. nframe) return
+ 
+        write(*,320) iframe+1
+  320   format('+', 'processing ',i4,' th frame                    ')
+ 
+*       shift origin of the image to (Wc,Wc) before fourier transform
+        do ix=1,Np,2
+        do iy=1,Np,2
+          cary2(ix,iy)     = ary2(ix,iy)
+          cary2(ix+1,iy+1) = ary2(ix+1,iy+1)
+          cary2(ix+1,iy)   =-ary2(ix+1,iy)
+          cary2(ix,iy+1)   =-ary2(ix,iy+1)
+        end do
+        end do
+ 
+        call four2(cary2,N,2,-1,+1)
+ 
+        do jx=1,Np
+        do jy=1,Np
+          pwr(jx,jy) = pwr(jx,jy) + real(cary2(jx,jy)*conjg(cary2(jx,jy)))
+        end do
+        end do
+ 
+        iframe = iframe + 1
+        if( iframe .ge. nframe) return
+ 
+*       reset temporary arrays
+        do jx=1,Np
+          do jy=1,Np
+            image1(jx,jy) = 0.0
+            image2(jx,jy) = 0.0
+              ary1(jx,jy) = 0.0
+              ary2(jx,jy) = 0.0
+             cary1(jx,jy) = (0.0,0.0)
+             cary2(jx,jy) = (0.0,0.0)
+          end do
+        end do
+ 
+************************* end of major loop ***********************************
+   20   continue
+   10   continue
+ 
+        end
+ 

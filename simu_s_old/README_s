@@ -1,0 +1,23 @@
+##########################################################################
+# README_s
+# To simulate the effects of atmospheric turbulence 
+#
+# See complementary documentation in "s_source.txt"
+# 
+# JLP
+# Version 09/06/2006
+##########################################################################
+
+s_source.txt
+s_pscorg.for : simulation of phase screen (from Tadashi Nakajima, 1988)
+               original version with fourn1 
+               
+s_screen.for : modified version of s_pscorg.for by JLP, with fft_2d
+
+s_psc.for : modified version of s_psorg by Marco de Vos, with four2
+
+# Library 
+s_fourn1.for : Fourier transform fourn1 from Num. Recipees 
+           modified by Marco de Vos. This version is called "four2" 
+           and should be used with s_psc.for
+

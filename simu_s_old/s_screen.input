@@ -1,0 +1,45 @@
+!*************************************************************************
+! File used by s_screen.for
+! to generate a simulation
+!
+! JLP
+! Version 24/05/2005
+!*************************************************************************
+! seed for random number generator (large odd integer)
+Random
+7597551
+! outer scale and inner scale of the turbulence(m) - recommended values
+Turbulence
+10.0  0.01
+! central wavelength(m), fractional bandwidth, sampling points
+Wavelength
+0.65e-6 0.016 3
+! source: # of point sources
+!         intensity(arbitrary unit), position offset(x,y) in arcsecond
+Source
+2
+1.0   0.0  0.0
+0.5   0.02 0.02
+! # of circular apertures (including voids)
+! configuration: center of aperture(x,y), radius(m) and type
+! 1 is an aperture,0 is a void. Voids should follow ordinary apertures.
+! Example: annular mask
+Aperture
+2
+0.0 0.0 2.0  1
+0.0 0.0 0.4  0
+! Multiple subsets are taken out of one phase screen.
+! Equally spaced sampling is specified by
+! x_min, x_max, step size in x(m)
+! y_min, y_max, step size in y(m)
+! JLP/WARNING: x_min, y_min should be larger than the aperture radii !!!
+Phase_screen
+2.25 8.75  0.14
+2.25 8.75  2.5
+! total number of frames to be processed
+Frame
+100
+!------ as an option `no atmosphere' can be specified by ------
+! obtaining beam pattern
+!! No_disturbance
+

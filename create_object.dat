@@ -1,0 +1,26 @@
+##################################################################
+# Batch file
+# for create_object
+# Version 29/02/2008
+##################################################################
+# Size:
+size=256,256 
+# Output filename:
+outfile=triple1.fits
+# 16 = Moffat
+option=16 
+# x, y coordinates relative to the center!
+center=-40,-40 
+# width in x (min and max) and y (min and max) and central intensity:
+# xw1, xw2, yw1, yw2, max_level
+param=5,5,5,5,10 
+#
+option=16 
+center=30,30
+param=5,5,5,5,6
+#
+option=16
+center=40,50
+param=5,5,5,5,4 
+# Exit
+option=0 

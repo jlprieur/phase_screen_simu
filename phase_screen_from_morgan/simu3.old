@@ -1,0 +1,723 @@
+/*  simu3.c
+ Creates simulated speckle data for a IDIMxIDIM array.
+ From Jeff Morgan and Elliott (kiloho::jeff or kiloho::elliott)
+ JLP95: add the possibility of no clipping 
+    (i.e. "continous frame", no Poisson clipping to simulate photon detection)
+
+ JLP
+ Version 16-06-95
+
+   The call is:
+      simu3 [-n nframes] [-p nph] [-r r_O] [-o ofname] [-O Ofname]
+            [-s seed] [-a] [-q]
+    where the flags have the following functions:
+	    -n  the program makes 'nframes' frames of simulated data
+	    -p  the average number of photons per frame (default is 150, if negative, no clipping) 
+	    -r  Kolmogorov's radius in meters (linked with seeing).
+            -o  the program uses the input image 'ofname' as the object
+		file (default is a point source)
+            -O  the output is written to 'Ofname' (default is
+	        'simu2.data1')
+            -s  'seed' is used as the seed for the random number
+	         generator
+            -a  aperture functions and psf's for frames 1 through 4
+		outputted in images  'aper1.fits' etc. and 
+		'psf1.fits' etc (default is no output)
+            -q  frame information is not printed to the terminal 
+		(default is to print)
+
+ It contains calls to an FFT routine called 'fourn',
+ which is nearly a literal transcription of the routine of the same
+ name found in the book "Numerical Recipes" by Press, et al.
+
+     */
+ 
+#define DEBUG
+
+#ifdef ibm
+#define FOURN1 fourn1
+#else
+#define FOURN1 fourn1_
+#endif
+/* Size of frames:
+#define IDIM 64
+#define DIM 4096
+*/
+#define IDIM 128 
+#define DIM 16384 
+/*
+*/
+#define MYRAN  2147483647.0
+/* In previous version " random()/MYRAN " was used 
+to generate pseudo-random numbers between 0 and 1 */
+#define MAXPHOTONS 24000
+#define MAXFRAMES 40000
+
+#include <stdio.h>
+#include <math.h>
+#include <fcntl.h>         /* For file handling */
+#include <jlp_ftoc.h>
+ 
+ 
+/* Data storage arrays */
+static float filter[DIM],object[DIM];
+static float prf[DIM],psf[DIM];
+static float filhatr[DIM],filhati[DIM];
+static float wframe[DIM],rhat[DIM];
+static float nphotons[MAXFRAMES];
+static char pacfrme[MAXPHOTONS*2+1];
+ 
+/* Packed arrays for FFT routine */
+static float psfpc[2*DIM], objpc[2*DIM], prfrm[2*DIM];
+static float packhat[2*DIM], packfil[2*DIM], hat[2*DIM];
+ 
+main(argc,argv)  
+int argc;
+char **argv;
+{
+/* input variables */
+int nframes, nph, naper;
+int iseed,quiet;
+char ofname[41],Ofname[41],ffname[41];
+int objectfile;
+ 
+/* main frame loop index */
+int ncount;
+ 
+/* file access variables */
+int fd1,n_written;
+
+/* misc. variables */
+int frvalue;
+float nphr, sum, rq;
+char *s;
+int i, j, k, n, istat;
+/*
+short int tail[1];
+*/
+char tail[1];
+int nn[2];
+
+/* JLP variables */
+int ndim = 2, ioption;
+int nx1,ny1,idim1;
+float w1, w2, r0;
+char comments[81];
+ 
+ 
+ /* add a '\0' to prevent any accident... */
+ comments[80]='\0'; ofname[41]='\0'; Ofname[41]='\0'; ffname[41]='\0';
+
+    /* Set default command line parameters */
+   nframes = 1;                  /* # of frames to be made = 1        */
+   nph = 150;                    /* Ave. # of photons per frame = 150 */
+   r0 = 0.1;                     /* Kolmogorov's radius (10 cm)       */
+   strcpy(Ofname,"simu2.data1"); /* output written to simu2.data1     */
+   objectfile=0;                 /* No object file,default is pt      */
+                                 /* source.                           */
+   quiet = 0;                    /* print out frame info              */
+   iseed = 102;                  /* seed for rand. # gen set to 102   */
+   naper = 0;                    /* no aperture fn or psf's outputted */
+/*   naper = 1; */               /* aperture and psf outputted        */   
+ 
+/* Get command line arguments */
+     while(argc-- > 1)
+        if( **++argv == '-')
+           for(s= *argv+1;*s != '\0';s++)
+	    switch(*s)
+	     {
+		 case 'n':
+			sscanf(*++argv,"%d",&nframes);
+			if(nframes > MAXFRAMES)
+			{ nframes = MAXFRAMES;
+			printf(" Fatal error: Max number of frames is %d\n",
+			nframes); exit(-1);
+			}
+                        --argc;
+	         	break;
+                 case 'p':
+			sscanf(*++argv,"%d",&nph);
+			if(nph > MAXPHOTONS*0.9)
+			{ nph = MAXPHOTONS*0.9;
+			printf(" Fatal error: Max number of photons is %d\n",
+			nph); exit(-1);
+			}
+                        --argc;
+			break;
+                 case 'r':
+			sscanf(*++argv,"%f",&r0);
+                        --argc;
+			break;
+                 case 'o':
+			strcpy(ofname,*++argv);
+                        --argc;
+			objectfile=1;
+			break;
+                 case 'O':
+			strcpy(Ofname,*++argv);
+                        --argc;
+			break;
+                 case 's':
+			sscanf(*++argv,"%d",&iseed);
+                        --argc;
+		        break;
+                 case 'q':
+			quiet=1;
+                        break;
+                 case 'a':
+			naper=1;
+			break;
+                 default:
+			printf("Illegal option: %s\n",s);
+			printf("simu3 [-n nframes]");
+			printf(" [-p nph] [-o ofname]");
+			printf(" [-r r0] [-O Ofname]");
+			printf(" [-s seed] [-a] [-q]\n");
+                        exit(-1);
+		        break;
+                 }
+
+#ifdef DEBUG
+ printf(" r0 = %f  nph = %d nframes = %d \n",r0,nph,nframes);
+ printf(" iseed = %d  \n",iseed);
+#endif
+
+printf(" simu3.c: Version 01/06/95. Outer scale in pupil plane is 2*D \n");
+printf(" Max nber of frames: %d , max nber of photons: %d\n",MAXFRAMES,MAXPHOTONS);
+printf(" Image scale is lambda/(2*D) per pixel\n"); 
+printf(" With lamdba=550nm, D=2m: 28.3mas/pixel; with 64x64 pixels: 1.82x1.82 arcsec\n"); 
+/* *********************************************************** */ 
+nn[0]=IDIM; nn[1]=IDIM;
+/* JLP format: */
+JLP_BEGIN();
+JLP_INQUIFMT();
+ 
+/* Creation of the output data file (photon-counting mode) */
+if(nph > 0) fd1=creat(Ofname,0666);
+
+/* object:  read object file, Fourier transform and output in objpc. */
+istat = get_object(objectfile,ofname,naper);
+
+JLP_RANDOM_INIT(&iseed);
+nx1=IDIM; ny1=IDIM; idim1=IDIM;
+
+/************************************************************ */ 
+for(ncount=1; ncount<=nframes; ncount++)  {  /* Main loop starts here. */
+
+get_psf(naper,ncount,r0);
+ 
+/* ******************************************************************** */
+/* PSF /
+
+/* psf are packed for fourn routine. */
+   for(i=0;i<DIM;i++)  {  
+       psfpc[i*2]=psf[i];     
+       psfpc[i*2+1]=0;
+       }
+#ifdef FOURN1
+   ioption=1; FOURN1(&psfpc[0],&nn[0],&ndim,&ioption);
+#else
+   fourn(psfpc-1,nn-1,2,1); 
+#endif
+ 
+/* The PSF and the object are convolved via the convolution theorem
+(i.e. product of FFT's). */
+   for(i=0;i<DIM;i++) {
+      prfrm[i*2]=psfpc[i*2]*objpc[i*2]-psfpc[i*2+1]*objpc[i*2+1];
+      prfrm[i*2+1]=psfpc[i*2]*objpc[i*2+1]+psfpc[i*2+1]*objpc[i*2];
+    }
+
+/* Inverse FFT : */
+#ifdef FOURN1
+    ioption=-1; FOURN1(&prfrm[0],&nn[0],&ndim,&ioption);
+#else
+    fourn(prfrm-1,nn-1,2,-1); 
+#endif
+ 
+/* Unpacking : */ 
+     for(i=0;i<DIM;i++)  {
+        prf[i]=prfrm[i*2];
+        }
+ 
+/*Shifts array so that [0,0] is at [nx1/2, ny1/2]. 
+ This is convenient because the fourn routine centers the transform on
+ [0,0] and in output images, we want the center of the image at 
+ [nx1/2, ny1/2] (center of screen). */
+   recent_real(prf,nx1,ny1,idim1);
+
+/* Create obj_conv.fits files */
+if(naper==1 && ncount == 1) 
+       {strcpy(ffname,"obj_conv.fits");
+	printf(" Output of %s \n",ffname);
+	strcpy(comments," Object convolved with PSF -analogic- //");
+        JLP_WRITEIMAG(prf,&nx1,&ny1,&idim1,ffname,comments);
+       }
+
+/* ****************************************************************** */
+/* Photon clipping... */
+   if(nph > 0)
+   {
+/* First normalise the image (prf) to nph photons (but still analogic) */
+    nphr=nph;
+    sum=0; 
+    for(i=0; i<DIM; i++) sum=sum+prf[i];
+    sum = sum/nphr;
+    for(i=0; i<DIM; i++) prf[i]=prf[i]/sum;
+
+#ifdef DEBUG
+    printf(" # of photons before clipping: %f \n",sum);
+#endif
+
+    clipping(&nphr);
+
+    if(quiet == 0)
+        {
+/* modulus 50 ...*/
+        if((ncount % 50) == 1)
+           printf("simu3/Nber of photons in frame %d = %f \n",ncount,nphr); 
+        }
+    nphotons[ncount-1]=nphr;
+   }
+/* End of photon clipping */
+  else
+   {
+    for(i=0; i<DIM; i++)  wframe[i]=prf[i];
+   }
+    
+ 
+/* Conversion of frame information to pacfrme for writing
+ to the output file.
+ Writes only the position of non-zero pixels, and as many times
+ as there are photons in that location */
+    if(nph > 0)
+    {
+    k=0;  
+/* The first value is a negative integer with the number of the frame */
+    pacfrme[0]=(-1)*ncount;  
+    for(j=0; j<IDIM; j++)  {
+	for(i=0; i<IDIM; i++)  {
+             frvalue=wframe[i+j*IDIM];
+	     for(n=0; n<frvalue; n++)  {
+		 pacfrme[k*2+1]=i;
+                 pacfrme[k*2+2]=j;
+                 k=k+1;
+                 }
+             }
+         }
+ 
+/* data written to output, if photon counting mode. */
+/*
+     n_written=write(fd1,pacfrme,((int)nphr*2+1)*sizeof(short));
+*/
+     n_written=write(fd1,pacfrme,(int)nphr*2+1);
+    }
+/* End of writing to photon file for this frame... */
+    
+if(ncount==1)  {
+/* Create #1's frame file */
+	strcpy(ffname,"frame1.fits");
+	nx1=IDIM; ny1=IDIM; idim1=IDIM;
+	printf(" Output of %s \n",ffname);
+	sprintf(comments," First frame //                   ");
+        JLP_WRITEIMAG(wframe,&nx1,&ny1,&idim1,ffname,comments);
+    }
+ 
+if(ncount==nframes)  {
+/* Create last frame file */
+	strcpy(ffname,"endfrm.fits");
+	nx1=IDIM; ny1=IDIM; idim1=IDIM;
+	printf(" Output of %s \n",ffname);
+	sprintf(comments," Last frame //                     ");
+        JLP_WRITEIMAG(wframe,&nx1,&ny1,&idim1,ffname,comments);
+ 
+/* Create 1-d file containing the number of photons in each frame */
+/* Only if photon clipping... */
+    if(nph > 0)
+      {
+	strcpy(ffname,"nphotons.fits");
+	nx1=nframes; ny1=1; idim1=nframes;
+	printf(" Output of %s \n",ffname);
+	sprintf(comments," Nphotons //                        ");
+        JLP_WRITEIMAG(nphotons,&nx1,&ny1,&idim1,ffname,comments);
+      }
+ 
+/* Write a negative integer as entry in output.*/
+    tail[0]=(-1)*(nframes+1);  
+/*
+    if(nph > 0) n_written=write(fd1,tail,sizeof(short));  
+*/
+    if(nph > 0) n_written=write(fd1,tail,1);  
+    }
+/* end of the main loop */
+}
+
+/* *************************************************************** */
+/* End : */
+
+  if(quiet == 0) printf("simu3: End calculation.\n");
+
+  JLP_END();
+}
+/* *********************************************************** */ 
+/* Generate Fourier filter: */
+int get_filter(ffname,fradius,naper)
+char *ffname;
+float fradius;
+int naper;
+{
+float w1,w2;
+register int i, j;
+int nx1,ny1,idim1;
+int ndim = 2, ioption, nn[2];
+float r, d, sum;
+char comments[81];
+
+#ifdef DEBUG
+printf(" Succesful entry in get_filter, naper = %d \n",naper);
+#endif
+/*  circular top hat filter centered on (IDIM/2,IDIM/2). */
+        for(j=0;j<IDIM;j++) 
+        {   w1=(j-(IDIM/2))*(j-(IDIM/2)); 
+	    for(i=0;i<IDIM;i++) 
+	    {
+            w2=(i-(IDIM/2))*(i-(IDIM/2)); 
+	    d=sqrt(w1+w2);
+	    if(d<fradius)
+	        filter[i+j*IDIM]=1.;
+	    else
+	        filter[i+j*IDIM]=0.;
+	    }
+	}
+ 
+/* Normalization: */
+	sum = 0.;
+        for(i=0; i<DIM; i++) sum = sum + filter[i];
+        if(sum != 0.) {for(i=0; i<DIM; i++) filter[i] = filter[i]/sum;}
+
+
+   /*
+   for(j=0; j<IDIM/2; j++)   
+   {for(i=0; i<IDIM/2; i++)   
+      {w1=filter[i+IDIM*j];
+       w2=filter[i+IDIM/2+IDIM*j];
+       filter[i+IDIM*j]=filter[i+IDIM/2+IDIM*(j+IDIM/2)];
+       filter[i+IDIM/2+IDIM*j]=filter[i+IDIM*(j+IDIM/2)];
+       filter[i+IDIM/2+IDIM*(j+IDIM/2)]=w1;
+       filter[i+IDIM*(j+IDIM/2)]=w2;
+    }
+   }    
+   */
+ 
+/*Packing arrays for transform routine*/
+        for(i=0;i<DIM;i++)  { 
+          packfil[i*2]=filter[i];
+	  packfil[i*2+1]=0.;
+	  }
+ 
+/* Taking transforms of the filter.           */
+  nn[0]=IDIM; nn[1]=IDIM;
+#ifdef FOURN1
+  ioption = 1; FOURN1(&packfil[0],&nn[0],&ndim,&ioption);
+#else
+    fourn(packfil-1,nn-1,2,1); 
+#endif
+
+/* Unpacking transformed arrays. */
+      for(i=0;i<DIM;i++)  { 
+        filhatr[i]=packfil[i*2];
+        filhati[i]=packfil[i*2+1];
+	}
+
+/* ****************** Output of filter: ************************* */
+if(naper==1)  {
+/* Create aper. #1's fits file */
+	strcpy(ffname,"filtfft.fits");
+	nx1=IDIM; ny1=IDIM; idim1=IDIM;
+	printf(" Output of %s \n",ffname);
+	sprintf(comments," FFT of the filter -real- radius: %f //",fradius);
+        JLP_WRITEIMAG(filhatr,&nx1,&ny1,&idim1,ffname,comments);
+        }
+
+return(0);
+}
+
+/********************************************************************* */
+/* object :  read object file, Fourier transform and output in objpc. */
+/********************************************************************* */
+
+int get_object(objectfile,ofname,naper)
+char *ofname;
+int objectfile, naper;
+{
+register int i, j;
+int nx1,ny1,idim1;
+int ndim = 2, ioption, nn[2];
+float objsum, w1, w2;
+char comments[81];
+
+ if(objectfile==0)      
+/* if an input file is not specified creates a point source in [IDIM/2,IDIM/2] */
+       {
+       for(i=0;i<DIM;i++) object[i]=0.;
+       nx1 = IDIM; ny1 = nx1; idim1 = nx1;
+       object[nx1/2 + (ny1/2) * idim1] = 1.;
+       }
+ else 
+ {
+	idim1=IDIM;
+        JLP_READIMAG(object,&nx1,&ny1,&idim1,ofname,comments);
+ }
+   
+/* Shifting center of array "object"*/
+   recent_real(object,nx1,ny1,idim1);
+
+/*
+	strcpy(ofname,"object100.fits                        ");
+        JLP_WRITEIMAG(object,&nx1,&ny1,&idim1,ofname,comments);
+    if(i>-100){JLP_END(); exit(-1);}
+*/
+
+/* "object" is normalized, packed and transformed.  */
+   objsum=0;             
+   for(i=0;i<DIM;i++)
+       objsum=objsum+object[i];
+
+   for(i=0;i<DIM;i++)  {    
+       objpc[i*2]=object[i]/objsum;
+       objpc[i*2+1]=0;
+       }
+
+   nn[0]=IDIM; nn[1]=IDIM;
+#ifdef FOURN1
+  ioption=1; FOURN1(&objpc[0],&nn[0],&ndim,&ioption);
+#else
+   fourn(objpc-1,nn-1,2,1); 
+#endif
+
+return(0);
+}
+
+/***************************************************************
+* To generate PSF 
+***************************************************************/
+
+int get_psf(naper,ncount,r0)
+int naper, ncount;
+float r0;
+{
+int i, j, k, n, istat;
+int nn[2];
+int ndim = 2, ioption;
+int nx1,ny1,idim1;
+float d, w1, w2, w3, w4;
+float L0, cent_obscu, diam, norm_fourier;
+char ffname[41],comments[81];
+char re_name[61], im_name[61], re_comments[81], im_comments[81];
+
+/* Called subroutines: */
+int get_gaussft(), get_phift(), recent_complex();
+int get_phasor(), output_pupil(), mask_pupil();
+
+nn[0]=IDIM; nn[1]=IDIM;
+nx1=IDIM; ny1=IDIM; idim1=IDIM;
+diam = 2.; cent_obscu = 0.;
+/* Outer scale should be at least twice the diameter (support of the
+autocorrelation of the pupil) */
+L0 = 2*diam; 
+  
+/* *********************************************************** */ 
+/* Complex Gaussian random array: */
+ get_gaussft(packhat,nx1,ny1,idim1);
+
+#ifdef DEBUG
+     printf("Gaussian random array real, imag %f,%f\n",packhat[0],packhat[1]);
+#endif
+
+/* Multiply with square root of Kolmogorov spectrum */
+ get_phift(packhat,nx1,ny1,idim1,L0,r0);
+
+#ifdef DEBUG
+     printf("Kolmogorov random array real, imag %f,%f\n",packhat[0],packhat[1]);
+#endif
+
+/* Shifting center of array */
+recent_complex(packhat,nx1,ny1,idim1);
+
+#ifdef DEBUG
+     printf("Kolmogorov array (decentred) real, imag %f,%f\n",packhat[0],packhat[1]);
+#endif
+
+/* *********************************************************** */ 
+/* Inverse FFT to compute the phase term: */
+#ifdef FOURN1
+   ioption=-1; FOURN1(&packhat[0],&nn[0],&ndim,&ioption);
+#else
+   fourn(packhat-1,nn-1,2,-1);
+#endif
+
+
+/* WARNING!!!!!
+ FOURN1 divides by sqrt(nx*ny) when ioption=-1 (inverse FFT).
+*/
+norm_fourier = sqrt((double)(nx1 * ny1));
+for(i=0; i<nx1*ny1*2; i++)
+  packhat[i] = packhat[i] * norm_fourier;
+ 
+#ifdef DEBUG
+     printf(" packhat: real[0],imag[0] %f,%f \n",packhat[0],packhat[1]);
+#endif
+
+/*************************************************************/
+/* We only keep the real part, and compute cos(phi) and sin(phi): */
+   get_phasor(packhat,nx1,ny1,idim1);
+
+/* Multiply with pupil: */
+/* The convolution is masked (pupil of a prime mirror with secondary) */
+/* "packhat" here becomes the aperture function */
+   diam = (float)(nx1/2);
+   mask_pupil(packhat,nx1,ny1,idim1,diam,cent_obscu);
+
+/* Output pupil: */
+/* Create aper. #1's fits file */
+if(naper==1 && ncount<3)
+  {
+  for(i = 0; i < 80; i++) re_comments[i]=' ';
+  re_comments[80]='\0';
+  sprintf(re_name,"aper%d_re.fits",ncount);
+  sprintf(re_comments," Pupil function -real part- #%d //",ncount);
+
+  for(i = 0; i < 80; i++) im_comments[i]=' ';
+  im_comments[80]='\0';
+  sprintf(im_name,"aper%d_im.fits",ncount);
+  sprintf(re_comments," Pupil function -imaginary part- #%d //",ncount);
+
+  output_pupil(packhat,nx1,ny1,idim1,re_name,im_name,re_comments,im_comments);
+  }
+ 
+
+/* Shifting center of array */
+   recent_complex(packhat,nx1,ny1,idim1);
+
+/* FFT to go from pupil to image plane: */
+#ifdef FOURN1
+   ioption=1; FOURN1(&packhat[0],&nn[0],&ndim,&ioption);
+#else
+   fourn(array-1,nn-1,2,1);
+#endif
+
+
+/* *********************************************************** */ 
+/* Now "packhat" is the FFT of the aperture function, so the squared modulus
+of "packhat" is the point spread function. */
+/* From field to intensity, and normalisation to 1 */
+   get_intensity(packhat,psf,nx1,ny1,idim1,1);
+
+/* Create psf*.fits files */
+if(naper==1 && ncount<3)  {
+	sprintf(ffname,"psf%d.fits",ncount);
+	nx1=IDIM; ny1=IDIM; idim1=IDIM;
+	printf(" Output of %s \n",ffname);
+	sprintf(comments," PSF -modsq- #%d //",ncount);
+        for(i=0; i<DIM; i++) wframe[i] = psf[i];
+        recent_real(wframe,nx1,ny1,idim1);
+        JLP_WRITEIMAG(wframe,&nx1,&ny1,&idim1,ffname,comments);
+	}
+}
+/*************************************************************
+* Clipping routine to generate simulated photo-counting "frame" 
+* simply look for the right number of photons to fit the
+* total number of photons (which is random around a mean value)
+* Not satisfactory... (JLP 10-09-1991)
+* Old version, from Jeff Morgan
+*************************************************************/ 
+int clipping1(nphr,iseed)
+float *nphr;
+int iseed;
+{
+float w1, w2, fudge, sum, np;
+register int i;
+int k, sign1, sign2;
+
+/* Now compute np (ie number of photons of current frame) */
+    JLP_RANDOM(&w1);
+    sign1=(floor)(w1*2-1);
+    sign1=sign1*2+1;
+    JLP_RANDOM(&w2);
+    np=*nphr+(float)sign1*w2*sqrt(*nphr*2.2);
+    for(i=0;i<6;i++)  {
+        JLP_RANDOM(&w1);
+        sign2=(floor)(w1*2-1);
+        sign2=sign2*2+1;
+        JLP_RANDOM(&w2);
+        np=np+(float)sign2*w2*sqrt(fabs(np))*.3;
+	}
+
+/* Before calling this routine, the sum of prf has been normalised to nphr*/
+    sum = *nphr;
+
+/* Computes the value of fudge such that there are roughly 
+np photons in the frame. Proceeds by adjusting "fudge" */
+    fudge=1.0;
+    k=0;
+    while(sum >= np+.22*sqrt(np) || sum <= np-.22*sqrt(np)) {
+       sum=0;
+       k=k+1;
+       for(i=0;i<DIM;i++)  {
+           prf[i]=prf[i]*fudge;
+           wframe[i]=floor(prf[i]+.5);
+           sum=sum+wframe[i];
+           }
+       fudge=sqrt(np/(sum+1));
+#ifdef DEBUG
+       printf(" k = %d ",k);
+#endif
+       if(k>40)
+	   fudge=sqrt(fudge);
+       if(k>80)
+	   fudge=sqrt(fudge);
+       if(k>120)
+	   fudge=sqrt(fudge);
+       if(k>200)  {
+	   printf("simu3/Fatal error: Clipping routine did not converge.\n");
+	   *nphr = 0.;
+	   exit(-1);
+	   }
+    }
+#ifdef DEBUG
+ printf(" np, sum %f %f\n",np,sum);
+#endif
+ *nphr = sum;
+ return (0);
+}
+/*************************************************************
+* Clipping routine to generate simulated photo-counting "frame" 
+* with Poisson noise
+*
+* JLP version 10-09-91
+*************************************************************/ 
+int clipping(nphr)
+float *nphr;
+{
+float sum, poidev();
+int idum;
+register int i;
+int iseed;
+
+/* Before calling this routine, the sum of prf has been normalised to nphr
+    sum = *nphr;
+*/
+
+       iseed = 104;
+       sum=0;
+       for(i=0;i<DIM;i++)  {
+/* Poisson generator */ 
+           wframe[i]=(int)poidev(prf[i],&iseed);
+/* Computing total number of photons: */
+           sum=sum+wframe[i];
+           }
+#ifdef DEBUG
+ printf(" sum %f \n",sum);
+#endif
+ *nphr = sum;
+ return (0);
+}
